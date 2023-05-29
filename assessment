@@ -1,0 +1,152 @@
+---
+- name: Deploy WordPress on AWS EC2
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # Set your AWS credentials and region
+    aws_access_key: "AKIA6MMHMRQY666VRJ43"
+    aws_secret_key: "uBYd3ruQyQktfdO18GW+ruLvwNg0j+Y3EzpFuiyw"
+    aws_region: "us-east-1"
+    # Set EC2 instance details
+    ec2_instance_type: "t2.micro"
+    ec2_keypair: "wordpress"
+    ec2_security_group: "sg-04b8069a13ebd991f"
+    ec2_subnet_id: "subnet-01b8e3fbba629e717"
+    ec2_ami: "ami-0715c1897453cabd1"
+    ec2_instance_public_ip: "3.80.83.74"
+    # Set RDS database details
+    db_instance_identifier: "rdsinstance1"
+    db_username: "root"
+    db_password: "Naveenkumarkommoju"
+    db_instance_class: "db.t2.micro"
+    db_engine: "mysql"
+    db_engine_version: "8.0.32"
+
+  tasks:
+    - name: Create an EC2 instance
+      ec2:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: "{{ aws_region }}"
+        key_name: "{{ ec2_keypair }}"
+        instance_type: "{{ ec2_instance_type }}"
+        security_group: "{{ ec2_security_group }}"
+        subnet_id: "{{ ec2_subnet_id }}"
+        image_id: "{{ ec2_ami }}"
+        count: 1
+        instance_tags:
+          Name: WordPress
+      register: ec2_instance
+
+    - name: Wait for SSH connectivity
+      wait_for:
+        host: "{{ ec2_instance.instances[0].public_ip }}"
+        port: 22
+        delay: 10
+        timeout: 320
+        state: started
+
+    - name: Configure EC2 instance for WordPress
+      become: true
+      gather_facts: true
+      hosts: "{{ hostvars[ec2_instance.ansible_facts.ansible_host]['ansible_host'] }}"
+      tasks:
+        - name: Update apt cache
+          apt:
+            update_cache: yes
+          become: true
+
+        - name: Install Apache
+          apt:
+            name: apache2
+            state: present
+          become: true
+
+        - name: Install MySQL client
+          apt:
+            name: mysql-client
+            state: present
+          become: true
+
+        - name: Install PHP and required modules
+          apt:
+            name: "{{ item }}"
+            state: present
+          become: true
+          loop:
+            - php
+            - libapache2-mod-php
+            - php-mysql
+            - php-curl
+            - php-gd
+            - php-mbstring
+            - php-xml
+          notify: Restart Apache
+
+        - name: Install and configure WordPress
+          unarchive:
+            src: "https://wordpress.org/latest.tar.gz"
+            dest: "/var/www/html"
+            remote_src: yes
+            creates: "/var/www/html/wordpress/index.php"
+          become: true
+
+        - name: Set ownership and permissions for WordPress
+          file:
+            path: "/var/www/html"
+            owner: www-data
+            group: www-data
+            state: directory
+            recurse: yes
+          become: true
+
+    handlers:
+      - name: Restart Apache
+        service:
+          name: apache2
+          state: restarted
+        become: true
+        
+      - name: Configure WordPress database connection
+          lineinfile:
+            path: "/var/www/html/wordpress/wp-config.php"
+            line: |
+              define( 'DB_NAME', 'wordpress' );
+              define( 'DB_USER', '{{ db_username }}' );
+              define( 'DB_PASSWORD', '{{ db_password }}' );
+              define( 'DB_HOST', '{{ rds_instance.endpoint }}' );
+          become: true
+
+    - name: Create RDS database instance
+      rds:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: "{{ aws_region }}"
+        command: create
+        instance_name: "{{ db_instance_identifier }}"
+        db_engine: "{{ db_engine }}"
+        db_instance_class: "{{ db_instance_class }}"
+        db_instance_identifier: "{{ db_instance_identifier }}"
+        db_username: "{{ db_username }}"
+        db_password: "{{ db_password }}"
+        db_engine_version: "{{ db_engine_version }}"
+        publicly_accessible: true
+      register: rds_instance
+
+    - name: Wait for RDS database to be available
+      rds_instance:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: "{{ aws_region }}"
+        instance_name: "{{ db_instance_identifier }}"
+        state: available
+        wait_timeout: 300
+
+  handlers:
+    - name: Restart Apache
+      service:
+        name: apache2
+        state: restarted
+      become: true
+# Add more tasks here to configure your EC2 instance and deploy WordPress
+  
